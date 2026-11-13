@@ -379,7 +379,7 @@ async function go(p,fromPop){
   if(p==='create'){ppApply();bulkInit()}
   if(p==='left'){await leftLoad();leftTab('new')}
   if(p==='gallery')galleryLoad();
-  if(p==='stock'){renderAll();stockNote()}
+  if(p==='stock')renderAll();
   if(p==='purchase'||p==='sale'){renderTab(p);startScan(p)}
 }
 /* browser back arrow / swipe-back navigation */
@@ -695,37 +695,6 @@ async function leftDel(id){
   $('lView').innerHTML='';leftCards();
 }
 
-function stockNote(){
-  const g=galGroups?galGroups():[];
-  const txt=g.length?g.map(x=>esc(x.name)+' '+x.ranges.map(r=>r[0]+'–'+r[1]).join(', ')).join(' &nbsp;|&nbsp; '):'<b>No lists found</b> — create them in Left Over IDs (e.g. kundan 800–1499)';
-  $('sAll').insertAdjacentHTML('afterbegin','<div class="msg" style="font-size:.8rem">Title prefix lists (build 4): '+txt+'</div>');
-}
-async function fixTitles(){
-  const out=$('lFix');out.innerHTML='<div class="msg">Checking...</div>';
-  try{
-    await refresh();await leftLoad();
-    const keep=LL.slice();
-    const std=[['ad',101,499],['polki',500,799],['kundan',800,1499],['ad',1500,1600]];
-    const missing=std.filter(([n,a,b])=>!LL.some(l=>String(l.name).trim().toLowerCase()===n&&l.start===a&&l.end===b))
-      .map(([name,start,end],i)=>({id:Date.now()+i,name,start,end}));
-    LL=keep.concat(missing);
-    const changes=Object.values(S.items).map(it=>({it,nn:fullName(it.id,it.name)})).filter(x=>x.nn!==String(x.it.name).trim());
-    if(!changes.length&&!missing.length){LL=keep;return out.innerHTML='<div class="msg">Nothing to change - all titles already have their list name.</div>'}
-    const ex=changes.slice(0,3).map(x=>x.it.id+': '+x.it.name+' -> '+x.nn).join('\n');
-    if(!confirm((missing.length?'Add '+missing.length+' missing list(s): '+missing.map(m=>m.name+' '+m.start+'-'+m.end).join(', ')+'\n':'')+
-        'Rename '+changes.length+' item(s)?\n'+ex+(changes.length>3?'\n...':''))){LL=keep;return out.innerHTML=''}
-    for(const m of missing){LL=(await lapi({action:'add',list:m})).lists}
-    leftCache();
-    let done=0,fail=[];
-    for(const x of changes){
-      try{await api({action:'create',id:x.it.id,name:x.nn,price:x.it.price,link:x.it.link||''})}catch(e){fail.push(x.it.id)}
-      done++;out.innerHTML='<div class="msg">Updating... '+done+' / '+changes.length+'</div>';
-    }
-    await refresh();
-    out.innerHTML='<div class="msg">Updated <b>'+(changes.length-fail.length)+'</b> item(s).'+(fail.length?'<br>Failed IDs: '+fail.map(esc).join(', '):'')+'</div>';
-  }catch(e){out.innerHTML='<div class="msg">Failed: '+esc(e.message||e)+'</div>'}
-}
-
 /* ===== AUTO TITLE PREFIX: ID range of a list decides the first word of the title ===== */
 function catOf(id){
   const t=String(id).trim();if(!/^\d+$/.test(t))return '';
@@ -816,12 +785,35 @@ async function showStock(){
   if(!it){$('sOut').innerHTML='<div class="msg">ID not found.</div>';return}
   $('sOut').innerHTML=cardHTML(it);drawBars($('sOut'));
 }
+let stockCat='';
+function inGroup(g,id){
+  const t=String(id).trim();if(!/^\d+$/.test(t))return false;
+  const n=Number(t);return g.ranges.some(r=>n>=r[0]&&n<=r[1]);
+}
+function stockTable(items,none){
+  return items.length?'<table><tr><th>S.No</th><th>ID</th><th>Name</th><th>Price</th><th>Qty</th><th></th></tr>'+
+   items.map((i,n)=>`<tr class="logrow" data-id="${esc(i.id)}" onclick="showStockCard(this)"><td>${n+1}</td><td>${esc(i.id)}</td><td>${esc(fullName(i.id,i.name))}</td><td>${esc(i.price)}</td><td>${i.qty}</td><td><button class="ed" data-id="${esc(i.id)}" onclick="event.stopPropagation();editItem(this.dataset.id)">✏ Edit</button><button class="del" data-id="${esc(i.id)}" onclick="event.stopPropagation();delItem(this.dataset.id)">🗑 Delete</button></td></tr>`).join('')+'</table>':'<div class="msg">'+none+'</div>';
+}
+function stockPick(k){stockCat=k;renderAll()}
 function renderAll(){
-  const f=$('qFilter').value,q=i=>Number(i.qty)||0;
-  const items=Object.values(S.items).filter(i=>f==='all'||(f==='gt3'?q(i)>3:q(i)===Number(f)));
-  const none=Object.keys(S.items).length?'No items with this quantity.':'No items yet.';
-  $('sAll').innerHTML=items.length?'<table><tr><th>S.No</th><th>ID</th><th>Name</th><th>Price</th><th>Qty</th><th></th></tr>'+
-   items.map((i,n)=>`<tr class="logrow" data-id="${esc(i.id)}" onclick="showStockCard(this)"><td>${n+1}</td><td>${esc(i.id)}</td><td>${esc(fullName(i.id,i.name))}</td><td>${esc(i.price)}</td><td>${i.qty}</td><td><button class="ed" data-id="${esc(i.id)}" onclick="event.stopPropagation();editItem(this.dataset.id)">✏ Edit</button><button class="del" data-id="${esc(i.id)}" onclick="event.stopPropagation();delItem(this.dataset.id)">🗑 Delete</button></td></tr>`).join('')+'</table>':none;
+  const f=$('qFilter').value,q=i=>Number(i.qty)||0,box=$('sAll');
+  const all=Object.values(S.items).sort((x,y)=>(Number(x.id)||0)-(Number(y.id)||0));
+  if(f!=='all'){
+    /* quantity filter: show every matching item from all lists */
+    const items=all.filter(i=>f==='gt3'?q(i)>3:q(i)===Number(f));
+    box.innerHTML=stockTable(items,all.length?'No items with this quantity.':'No items yet.');
+    return;
+  }
+  /* "All": show one button per list name, table appears after choosing one */
+  const groups=galGroups();
+  const cats=groups.map(g=>({key:g.name.toLowerCase(),label:g.name.toUpperCase(),items:all.filter(i=>inGroup(g,i.id))}));
+  const other=all.filter(i=>!groups.some(g=>inGroup(g,i.id)));
+  if(other.length)cats.push({key:'__other',label:'OTHER',items:other});
+  if(!cats.length){box.innerHTML=stockTable(all,'No items yet.');return}
+  if(!cats.some(c=>c.key===stockCat))stockCat='';
+  const cur=cats.find(c=>c.key===stockCat);
+  box.innerHTML='<div class="ltabs">'+cats.map(c=>`<button class="b${c.key===stockCat?' on':''}" data-k="${esc(c.key)}" onclick="stockPick(this.dataset.k)">${esc(c.label)} (${c.items.length})</button>`).join('')+'</div>'+
+    (cur?stockTable(cur.items,'No items in '+cur.label+' yet.'):'<div class="msg">Tap '+cats.map(c=>esc(c.label)).join(', ')+' to see its items.</div>');
 }
 let busy=false,scanLock=false,holdCode='',holdT=0;const seen={},COOL=30000;
 async function move(type,raw){
